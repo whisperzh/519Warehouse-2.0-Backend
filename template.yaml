@@ -1,0 +1,134 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Transform: AWS::Serverless-2016-10-31
+Description: >
+  warehouse2
+
+  Sample SAM Template for warehouse2
+
+# More info about Globals: https://github.com/awslabs/serverless-application-model/blob/master/docs/globals.rst
+Globals:
+  Function:
+    Timeout: 3
+    MemorySize: 128
+
+Resources:
+  WarehouseFunction:
+    Type: AWS::Serverless::Function # More info about Function Resource: https://github.com/awslabs/serverless-application-model/blob/master/versions/2016-10-31.md#awsserverlessfunction
+    Properties:
+    
+      PackageType: Image
+      Events:
+
+      
+        S3Event:
+          Type: S3
+          Properties:
+            Bucket: !Ref WarehouseBucket
+            Events: s3:ObjectCreated:Put
+
+        SQSEvent:
+          Type: SQS
+          Properties:
+            Queue: !GetAtt taskqueue.Arn
+            BatchSize: 1
+
+        
+       
+      Environment:
+        Variables:
+          TABLE_NAME: !Ref PdfTable
+
+      Policies:
+        - SQSPollerPolicy:
+            QueueName: !Ref taskqueue
+
+        - SQSSendMessagePolicy:
+            QueueName: !Ref taskqueue
+            
+        - SQSPollerPolicy:
+            QueueName: !Ref DeadLetterQueue
+
+        - Version: '2012-10-17'
+          Statement:
+
+            - Effect: Allow
+              Action:
+                - rekognition:*
+              Resource: '*'
+
+            - Effect: Allow
+              Action:
+                - dynamodb:PutItem
+              Resource: !GetAtt PdfTable.Arn
+
+            - Effect: Allow
+              Action:
+                - s3:GetObject*
+              Resource: !Sub "arn:aws:s3:::${AWS::StackName}-${AWS::Region}-${AWS::AccountId}*"
+
+            - Effect: Allow
+              Action:
+                - sqs:*
+              Resource: !GetAtt taskqueue.Arn
+
+    Metadata:
+      DockerTag: WarehouseFunction
+      DockerContext: .
+      Dockerfile: Dockerfile
+
+  WarehouseBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Sub "${AWS::StackName}-${AWS::Region}-${AWS::AccountId}"
+      CorsConfiguration:
+        CorsRules:
+          - AllowedHeaders:
+              - '*'
+            AllowedMethods:
+              - 'PUT'
+              - 'POST'
+              - 'GET'
+            AllowedOrigins:
+              - '*'
+            MaxAge: 3000
+            
+  MyS3BucketPolicy:
+          Type: AWS::S3::BucketPolicy
+          Properties:
+            Bucket: !Ref WarehouseBucket
+            PolicyDocument:
+              Version: '2012-10-17'
+              Statement:
+                - Effect: Allow
+                  Principal: '*'
+                  Action:
+                    - 's3:PutObject'
+                    - 's3:GetObject'
+                  Resource: !Sub 'arn:aws:s3:::${WarehouseBucket}/*'
+
+  taskqueue:
+    Type: AWS::SQS::Queue
+    Properties:
+      QueueName: taskqueue
+      RedrivePolicy:
+        deadLetterTargetArn: !GetAtt DeadLetterQueue.Arn
+        maxReceiveCount: 2
+
+  PdfTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: PdfTable
+      AttributeDefinitions:
+        - AttributeName: file_name
+          AttributeType: S
+      KeySchema:
+        - AttributeName: file_name
+          KeyType: HASH
+      ProvisionedThroughput:
+        ReadCapacityUnits: 2
+        WriteCapacityUnits: 2
+
+  DeadLetterQueue:
+    Type: AWS::SQS::Queue
+    Properties:
+      QueueName: dLQueue
